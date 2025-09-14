@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>فاحص باركود من ملف Excel</title>
+  <style>
+    body{font-family:Tahoma, Arial;direction:rtl;padding:16px}
+    h1{font-size:20px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{border:1px solid #ddd;padding:6px;text-align:center}
+    #reader{width:100%;max-width:480px;margin-top:12px}
+    .found{background:#d4ffd4}
+    .notfound{background:#ffd6d6}
+    .info{margin-top:8px}
+    button{padding:8px 12px}
+  </style>
+</head>
+<body>
+  <h1>تطبيق ويب — فحص باركود مقابل قائمة من ملف Excel</h1>
+  <p>هذا ملف HTML واحد يمكنك حفظه وفتحه على هاتفك أو متصفح الحاسوب. يتيح رفع ملف Excel (.xlsx) يحتوي على قائمة المعدات (عمود باركود أو رمز) ثم استخدام كاميرا الهاتف لمسح الباركود والتحقق من وجوده في القائمة.</p>
+
+  <div class="controls">
+    <label>اختر ملف Excel: <input id="fileInput" type="file" accept=".xlsx,.xls" /></label>
+    <label>حدد اسم العمود الذي يحتوي الباركود: <input id="columnName" placeholder="مثال: barcode أو رمز" /></label>
+    <button id="loadBtn">تحميل وقراءة الملف</button>
+    <button id="startScan" disabled>بدء المسح</button>
+    <button id="stopScan" disabled>إيقاف المسح</button>
+  </div>
+
+  <div id="status" class="info"></div>
+  <div id="reader"></div>
+
+  <table id="dataTable" hidden>
+    <thead id="thead"></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+  <script>
+    // متغيرات عامة
+    let codesSet = new Set();
+    let rows = [];
+    let html5QrcodeScanner = null;
+
+    const fileInput = document.getElementById('fileInput');
+    const loadBtn = document.getElementById('loadBtn');
+    const startScan = document.getElementById('startScan');
+    const stopScan = document.getElementById('stopScan');
+    const status = document.getElementById('status');
+    const table = document.getElementById('dataTable');
+    const thead = document.getElementById('thead');
+    const tbody = document.getElementById('tbody');
+    const columnNameInput = document.getElementById('columnName');
+
+    function setStatus(msg, isError=false){
+      status.textContent = msg;
+      status.style.color = isError ? 'red' : 'black';
+    }
+
+    loadBtn.addEventListener('click', ()=>{
+      const file = fileInput.files[0];
+      if(!file){ setStatus('اختر ملف Excel أولاً.', true); return; }
+      const reader = new FileReader();
+      reader.onload = (e)=>{
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, {type:'array'});
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const json = XLSX.utils.sheet_to_json(worksheet, {defval: ''});
+        if(!json || json.length===0){ setStatus('الملف فارغ أو لم يتم قراءته بشكل صحيح.', true); return; }
+        rows = json;
+        renderTable(json);
+        populateCodesFromColumn();
+        startScan.disabled = false;
+        setStatus('تم تحميل الملف. يمكن الآن بدء المسح.');
+      };
+      reader.onerror = ()=> setStatus('خطأ في قراءة الملف.', true);
+      reader.readAsArrayBuffer(file);
+    });
+
+    function renderTable(json){
+      // رأس الجدول
+      const keys = Object.keys(json[0]);
+      thead.innerHTML = '<tr>' + keys.map(k=>`<th>${k}</th>`).join('') + '<th>الحالة</th></tr>';
+      tbody.innerHTML = '';
+      json.forEach((r, idx)=>{
+        const tr = document.createElement('tr');
+        tr.dataset.index = idx;
+        tr.innerHTML = keys.map(k=>`<td>${String(r[k])}</td>`).join('') + '<td class="statusCell">---</td>';
+        tbody.appendChild(tr);
+      });
+      table.hidden = false;
+    }
+
+    function populateCodesFromColumn(){
+      codesSet.clear();
+      const colName = columnNameInput.value.trim();
+      if(!colName){ setStatus('لم تحدد اسم العمود؛ سنستخدم أول عمود تلقائياً.'); }
+      const keys = Object.keys(rows[0]);
+      const chosen = colName && keys.includes(colName) ? colName : keys[0];
+      rows.forEach(r=>{
+        const v = String(r[chosen] ?? '').trim();
+        if(v) codesSet.add(v);
+      });
+      setStatus(`تم بناء قائمة التحقق من العمود: "${chosen}" — ${codesSet.size} عنصر.`);
+    }
+
+    // زر البدء
+    startScan.addEventListener('click', async ()=>{
+      // تأكد من وجود قائمة
+      if(codesSet.size===0){ populateCodesFromColumn(); if(codesSet.size===0){ setStatus('قائمة الباركود فارغة — تأكد من اختيار العمود الصحيح وملء الملف.', true); return; }}
+
+      startScan.disabled = true; stopScan.disabled = false;
+      setStatus('جارٍ تشغيل الكاميرا — ضع الكاميرا على الباركود...');
+      const config = { fps: 10, qrbox: 250 };
+      // html5-qrcode
+      html5QrcodeScanner = new Html5Qrcode("reader");
+      try{
+        await html5QrcodeScanner.start(
+          { facingMode: "environment" },
+          config,
+          qrCodeMessage => {
+            // عند قراءة باركود
+            handleScannedCode(qrCodeMessage);
+          },
+          errorMessage => {
+            // أخطاء بسيطة أثناء المسح؛ لا نعرضها باستمرار
+            // console.log('scan error', errorMessage);
+          }
+        );
+      }catch(err){
+        setStatus('فشل تشغيل الكاميرا: ' + err, true);
+        startScan.disabled = false; stopScan.disabled = true;
+      }
+    });
+
+    stopScan.addEventListener('click', async ()=>{
+      if(html5QrcodeScanner){
+        await html5QrcodeScanner.stop();
+        html5QrcodeScanner.clear();
+        html5QrcodeScanner = null;
+      }
+      startScan.disabled = false; stopScan.disabled = true;
+      setStatus('تم إيقاف الكاميرا.');
+      document.getElementById('reader').innerHTML = '';
+    });
+
+    function normalizeCode(s){ return String(s).trim(); }
+
+    function handleScannedCode(code){
+      const normalized = normalizeCode(code);
+      const found = codesSet.has(normalized);
+      setStatus(found ? `موجود: ${normalized}` : `غير موجود: ${normalized}`);
+      // تلوين السطر إذا كان موجودًا
+      // نحاول إيجاد السطر المطابق في الجدول
+      for(const tr of tbody.children){
+        tr.classList.remove('found','notfound');
+        const cells = Array.from(tr.querySelectorAll('td'));
+        // نفترض أن العمود المختار هو الأول أو المستخدم
+        const colName = columnNameInput.value.trim();
+        const keys = Object.keys(rows[0]);
+        const chosen = colName && keys.includes(colName) ? colName : keys[0];
+        const value = String(rows[tr.dataset.index][chosen] ?? '').trim();
+        if(value === normalized){
+          tr.classList.add(found ? 'found' : 'notfound');
+          tr.querySelector('.statusCell').textContent = found ? 'موجود' : 'غير موجود';
+          // تمرير السطر إلى العرض
+          tr.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+      }
+      // إن أردت، يمكنك إضافة سجل عمليات المسح أو تشغيل صوت
+    }
+
+    // إذا غيّر المستخدم اسم العمود بعد التحميل
+    columnNameInput.addEventListener('change', ()=>{
+      if(rows.length) populateCodesFromColumn();
+    });
+  </script>
+</body>
+</html>
