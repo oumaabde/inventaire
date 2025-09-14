@@ -19,14 +19,15 @@
 </head>
 <body>
   <h1>تطبيق ويب — فحص باركود مقابل قائمة من ملف Excel</h1>
-  <p>هذا ملف HTML واحد يمكنك حفظه وفتحه على هاتفك أو متصفح الحاسوب. يتيح رفع ملف Excel (.xlsx) يحتوي على قائمة المعدات (عمود باركود أو رمز) ثم استخدام كاميرا الهاتف لمسح الباركود والتحقق من وجوده في القائمة.</p>
+  <p>يمكنك رفع ملف Excel (.xlsx) يحتوي قائمة المعدات ثم استخدام الكاميرا لمسح الباركود أو رفع صورة للباركود للتحقق من وجوده في القائمة.</p>
 
   <div class="controls">
     <label>اختر ملف Excel: <input id="fileInput" type="file" accept=".xlsx,.xls" /></label>
-    <label>حدد اسم العمود الذي يحتوي الباركود: <input id="columnName" placeholder="مثال: barcode أو رمز" /></label>
-    <button id="loadBtn">تحميل وقراءة الملف</button>
-    <button id="startScan" disabled>بدء المسح</button>
+    <label>اسم العمود (الباركود): <input id="columnName" placeholder="مثال: barcode أو رمز" /></label>
+    <button id="loadBtn">تحميل الملف</button>
+    <button id="startScan" disabled>بدء المسح بالكاميرا</button>
     <button id="stopScan" disabled>إيقاف المسح</button>
+    <label>أو اختر صورة باركود: <input id="imageInput" type="file" accept="image/*" /></label>
   </div>
 
   <div id="status" class="info"></div>
@@ -40,7 +41,6 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
   <script>
-    // متغيرات عامة
     let codesSet = new Set();
     let rows = [];
     let html5QrcodeScanner = null;
@@ -54,6 +54,7 @@
     const thead = document.getElementById('thead');
     const tbody = document.getElementById('tbody');
     const columnNameInput = document.getElementById('columnName');
+    const imageInput = document.getElementById('imageInput');
 
     function setStatus(msg, isError=false){
       status.textContent = msg;
@@ -70,19 +71,18 @@
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
         const json = XLSX.utils.sheet_to_json(worksheet, {defval: ''});
-        if(!json || json.length===0){ setStatus('الملف فارغ أو لم يتم قراءته بشكل صحيح.', true); return; }
+        if(!json || json.length===0){ setStatus('الملف فارغ أو لم يتم قراءته.', true); return; }
         rows = json;
         renderTable(json);
         populateCodesFromColumn();
         startScan.disabled = false;
-        setStatus('تم تحميل الملف. يمكن الآن بدء المسح.');
+        setStatus('تم تحميل الملف. جاهز للمسح أو رفع صورة.');
       };
       reader.onerror = ()=> setStatus('خطأ في قراءة الملف.', true);
       reader.readAsArrayBuffer(file);
     });
 
     function renderTable(json){
-      // رأس الجدول
       const keys = Object.keys(json[0]);
       thead.innerHTML = '<tr>' + keys.map(k=>`<th>${k}</th>`).join('') + '<th>الحالة</th></tr>';
       tbody.innerHTML = '';
@@ -98,7 +98,6 @@
     function populateCodesFromColumn(){
       codesSet.clear();
       const colName = columnNameInput.value.trim();
-      if(!colName){ setStatus('لم تحدد اسم العمود؛ سنستخدم أول عمود تلقائياً.'); }
       const keys = Object.keys(rows[0]);
       const chosen = colName && keys.includes(colName) ? colName : keys[0];
       rows.forEach(r=>{
@@ -108,28 +107,18 @@
       setStatus(`تم بناء قائمة التحقق من العمود: "${chosen}" — ${codesSet.size} عنصر.`);
     }
 
-    // زر البدء
     startScan.addEventListener('click', async ()=>{
-      // تأكد من وجود قائمة
-      if(codesSet.size===0){ populateCodesFromColumn(); if(codesSet.size===0){ setStatus('قائمة الباركود فارغة — تأكد من اختيار العمود الصحيح وملء الملف.', true); return; }}
-
+      if(codesSet.size===0){ populateCodesFromColumn(); if(codesSet.size===0){ setStatus('القائمة فارغة.', true); return; }}
       startScan.disabled = true; stopScan.disabled = false;
-      setStatus('جارٍ تشغيل الكاميرا — ضع الكاميرا على الباركود...');
+      setStatus('جارٍ تشغيل الكاميرا...');
       const config = { fps: 10, qrbox: 250 };
-      // html5-qrcode
       html5QrcodeScanner = new Html5Qrcode("reader");
       try{
         await html5QrcodeScanner.start(
           { facingMode: "environment" },
           config,
-          qrCodeMessage => {
-            // عند قراءة باركود
-            handleScannedCode(qrCodeMessage);
-          },
-          errorMessage => {
-            // أخطاء بسيطة أثناء المسح؛ لا نعرضها باستمرار
-            // console.log('scan error', errorMessage);
-          }
+          qrCodeMessage => { handleScannedCode(qrCodeMessage); },
+          errorMessage => {}
         );
       }catch(err){
         setStatus('فشل تشغيل الكاميرا: ' + err, true);
@@ -154,12 +143,8 @@
       const normalized = normalizeCode(code);
       const found = codesSet.has(normalized);
       setStatus(found ? `موجود: ${normalized}` : `غير موجود: ${normalized}`);
-      // تلوين السطر إذا كان موجودًا
-      // نحاول إيجاد السطر المطابق في الجدول
       for(const tr of tbody.children){
         tr.classList.remove('found','notfound');
-        const cells = Array.from(tr.querySelectorAll('td'));
-        // نفترض أن العمود المختار هو الأول أو المستخدم
         const colName = columnNameInput.value.trim();
         const keys = Object.keys(rows[0]);
         const chosen = colName && keys.includes(colName) ? colName : keys[0];
@@ -167,16 +152,27 @@
         if(value === normalized){
           tr.classList.add(found ? 'found' : 'notfound');
           tr.querySelector('.statusCell').textContent = found ? 'موجود' : 'غير موجود';
-          // تمرير السطر إلى العرض
           tr.scrollIntoView({behavior:'smooth', block:'center'});
         }
       }
-      // إن أردت، يمكنك إضافة سجل عمليات المسح أو تشغيل صوت
     }
 
-    // إذا غيّر المستخدم اسم العمود بعد التحميل
     columnNameInput.addEventListener('change', ()=>{
       if(rows.length) populateCodesFromColumn();
+    });
+
+    // دعم رفع صورة باركود
+    imageInput.addEventListener('change', ()=>{
+      const file = imageInput.files[0];
+      if(!file){ return; }
+      const html5Qr = new Html5Qrcode("reader");
+      html5Qr.scanFile(file, true)
+        .then(decodedText => {
+          handleScannedCode(decodedText);
+        })
+        .catch(err => {
+          setStatus('لم يتمكن من قراءة الصورة: ' + err, true);
+        });
     });
   </script>
 </body>
